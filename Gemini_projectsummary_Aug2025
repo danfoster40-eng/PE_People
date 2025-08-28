@@ -1,0 +1,124 @@
+Neo4j Partnership Graph: Project Summary
+This document summarizes the final design and key scripts for the partnership management graph database project.
+
+1. Final Graph Model
+The database is structured around a unified model where all individuals are represented as :Person nodes.
+
+Node Labels:
+
+:Person: Represents all individuals, including internal contacts and PE firm targets.
+
+:Company: Represents the companies where contacts work (e.g., AWS).
+
+:PEFirm: Represents Private Equity firms.
+
+:Portco: An additional label for portfolio companies, often used with :Company.
+
+:Cloud_Provider: Represents cloud services (e.g., AWS, Azure, GCP).
+
+Relationships:
+
+(Person)-[:WORKS_AT]->(Company) or (PEFirm)
+
+(PEFirm)-[:INVESTED_IN]->(Portco)
+
+(Portco)-[:USES]->(Cloud_Provider)
+
+(Person {PE Target})<-[:KNOWS]-(Person {Your Contact})
+
+2. Data Import Workflow
+The data is loaded in a specific order using CSV files hosted at public "Raw" URLs (e.g., from GitHub Gist).
+
+Load Core Network: Run Script 1 on Mutual connections - Sheet1.csv to create the detailed :Person and :Company nodes for your direct contacts. This establishes the "source of truth".
+
+Load PE Targets & Link: Run Script 2 on Main.csv to create :Person nodes for PE firm targets and link them to your core network via the M1, M2... columns.
+
+Load Portfolio Companies: Run Script 3 on specific PE firm CSVs (e.g., Vista Equity Partners.csv) to create the :Portco nodes and link them to their respective :PEFirm and :Cloud_Provider nodes.
+
+3. Final Cypher Scripts
+These are the final, robust scripts for importing and querying data in your AuraDB instance.
+
+Script 1: Load Core Network (Contacts)
+File: Mutual connections - Sheet1.csv
+
+Cypher
+
+LOAD CSV WITH HEADERS FROM "PASTE_URL_FOR_Mutual_connections_Sheet1.csv" AS row
+
+MERGE (p:Person {name: row.Name})
+  ON CREATE SET p.title = row.Title, p.linkedin = row.Link;
+MERGE (c:Company {name: row.Company});
+MERGE (p)-[:WORKS_AT]->(c);
+Script 2: Load and Link PE Targets
+File: Main.csv
+
+Cypher
+
+LOAD CSV WITH HEADERS FROM "PASTE_URL_FOR_Main.csv" AS row
+
+MERGE (p:Person {name: row.Name})
+  ON CREATE SET p.title = row.Title, p.linkedin = row.Links;
+MERGE (f:PEFirm {name: row.`PE Firm`});
+MERGE (p)-[:WORKS_AT]->(f);
+
+WITH p, [
+    row.M1, row.M2, row.M3, row.M4, row.M5, row.M6, row.M7, row.M8, row.M9, row.M10,
+    row.M11, row.M12, row.M13, row.M14, row.M15, row.M16, row.M17, row.M18, row.M19,
+    row.M20, row.M21, row.M22, row.M23
+] AS mutualNames
+UNWIND mutualNames AS mutualName
+WITH p, mutualName WHERE mutualName IS NOT NULL AND trim(mutualName) <> ""
+MATCH (contact:Person {name: trim(mutualName)})
+MERGE (p)<-[:KNOWS]-(contact);
+Script 3: Load Portfolio Companies
+File: PE_Attendees_2025refresh - Vista Equity Partners.csv
+
+Cypher
+
+LOAD CSV WITH HEADERS FROM "PASTE_YOUR_RAW_URL_HERE" AS row
+WITH row
+WHERE row.`PE Firm` IS NOT NULL AND trim(row.`PE Firm`) <> ""
+  AND row.Company_Name IS NOT NULL AND trim(row.Company_Name) <> ""
+
+MERGE (pe:PEFirm {name: row.`PE Firm`});
+MERGE (portco:Portco:Company {name: row.Company_Name})
+  ON CREATE SET portco.website = row.Website;
+MERGE (pe)-[:INVESTED_IN]->(portco);
+
+WITH portco, [row.Cloud_Provider1, row.Cloud_Provider2, row.Cloud_Provider3] AS providers
+UNWIND providers AS providerName
+WITH portco, providerName
+WHERE providerName IS NOT NULL AND trim(providerName) <> "" AND trim(providerName) <> "Unknown"
+MERGE (cp:Cloud_Provider {name: trim(providerName)})
+MERGE (portco)-[:USES]->(cp);
+4. Saved Bloom Queries (Revenue Tiers)
+These are static queries saved in Bloom to find portfolio companies in specific revenue brackets.
+
+Example Query (Revenue >= $501M)
+Name: Revenue: >= $501M
+
+Cypher
+
+MATCH (p:Portco)
+WHERE p.grossAnnualRevenue IS NOT NULL
+WITH p, replace(replace(replace(p.grossAnnualRevenue, '$', ''), 'M', ''), '+', '') AS cleanedRevenueString
+WITH p,
+    CASE
+      WHEN cleanedRevenueString =~ '^[0-9]+$' THEN toInteger(cleanedRevenueString)
+      ELSE null
+    END AS revenueValue
+WHERE revenueValue IS NOT NULL AND revenueValue >= 501
+RETURN p
+5. Key Troubleshooting Steps
+"No Index Present" Error in Bloom: This is a Bloom caching issue. The solution is to run explicit Cypher queries (MATCH (n:Label) RETURN n) rather than search phrases. If it persists, create a text index (CREATE TEXT INDEX...) in the browser, then disconnect/reconnect Bloom.
+
+null Property Error on MERGE: This is caused by blank cells in the CSV. Add a WITH row WHERE row.ColumnName IS NOT NULL filter after LOAD CSV.
+
+APOC Function Not Found: AuraDB has a limited set of APOC functions. Use standard Cypher equivalents, such as a CASE statement with a regex check (=~ '^[0-9]+$') for safe integer conversion.
+
+
+
+
+
+
+
